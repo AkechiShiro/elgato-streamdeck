@@ -92,6 +92,9 @@ pub enum StreamDeckInput {
     /// Encoder/Knob was twisted/turned
     EncoderTwist(Vec<i8>),
 
+    /// Touch point was pressed
+    TouchPointStateChange(Vec<bool>),
+
     /// Touch screen received short press
     TouchScreenPress(u16, u16),
 
@@ -474,6 +477,7 @@ impl StreamDeck {
     pub fn write_lcd(&self, x: u16, y: u16, rect: &ImageRect) -> Result<(), StreamDeckError> {
         if !match self.kind {
             Kind::Plus => true,
+            Kind::Neo => true,
             Kind::Akp153 => false,
             _ => false,
         } {
@@ -709,6 +713,17 @@ impl StreamDeck {
         }
     }
 
+    /// Sets specified touch point's led strip color
+    pub fn set_touch_point_color(&mut self, point: u8, red: u8, green: u8, blue: u8) -> Result<(), StreamDeckError> {
+        let mut buf = vec![0x03, 0x06];
+
+        let touch_point_index: u8 = point + self.kind.key_count();
+        buf.extend(vec![touch_point_index]);
+        buf.extend(vec![red, green, blue]);
+
+        Ok(send_feature_report(&self.device, buf.as_slice())?)
+    }
+
     /// Sleeps the device
     pub fn sleep(&self) -> Result<(), StreamDeckError> {
         match self.kind {
@@ -762,6 +777,7 @@ impl StreamDeck {
             states: Mutex::new(DeviceState {
                 buttons: vec![false; self.kind.key_count() as usize],
                 encoders: vec![false; self.kind.encoder_count() as usize],
+                points: vec![false; self.kind.point_count() as usize],
             }),
         })
     }
@@ -860,6 +876,12 @@ pub enum DeviceStateUpdate {
     /// Encoder was twisted
     EncoderTwist(u8, i8),
 
+    /// Touch Point got pressed down
+    TouchPointDown(u8),
+
+    /// Touch Point got released
+    TouchPointUp(u8),
+
     /// Touch screen received short press
     TouchScreenPress(u16, u16),
 
@@ -874,6 +896,7 @@ pub enum DeviceStateUpdate {
 struct DeviceState {
     pub buttons: Vec<bool>,
     pub encoders: Vec<bool>,
+    pub points: Vec<bool>,
 }
 
 /// Button reader that keeps state of the Stream Deck and returns events instead of full states
@@ -935,6 +958,20 @@ impl DeviceStateReader {
                         updates.push(DeviceStateUpdate::EncoderTwist(index as u8, *change));
                     }
                 }
+            }
+
+            StreamDeckInput::TouchPointStateChange(points) => {
+                for (index, (their, mine)) in zip(points.iter(), my_states.points.iter()).enumerate() {
+                    if *their != *mine {
+                        if *their {
+                            updates.push(DeviceStateUpdate::TouchPointDown(index as u8));
+                        } else {
+                            updates.push(DeviceStateUpdate::TouchPointUp(index as u8));
+                        }
+                    }
+                }
+
+                my_states.points = points;
             }
 
             StreamDeckInput::TouchScreenPress(x, y) => {
